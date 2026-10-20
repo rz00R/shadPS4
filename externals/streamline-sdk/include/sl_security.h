@@ -34,6 +34,42 @@
 #include <wintrust.h>
 #include <inttypes.h>
 
+#if defined(__MINGW32__) && !defined(WSS_VERIFY_SPECIFIC)
+// tlg cross build: MinGW's wintrust.h predates the signature settings (Windows 8 SDK layout).
+typedef struct WINTRUST_SIGNATURE_SETTINGS_ {
+    DWORD cbStruct;
+    DWORD dwIndex;
+    DWORD dwFlags;
+    DWORD cSecondarySigs;
+    DWORD dwVerifiedSigIndex;
+    PCERT_STRONG_SIGN_PARA pCryptoPolicy;
+} WINTRUST_SIGNATURE_SETTINGS, *PWINTRUST_SIGNATURE_SETTINGS;
+#define WSS_VERIFY_SPECIFIC 0x00000001
+#define WSS_GET_SECONDARY_SIG_COUNT 0x00000002
+typedef struct SL_WINTRUST_DATA_ {
+    DWORD cbStruct;
+    LPVOID pPolicyCallbackData;
+    LPVOID pSIPClientData;
+    DWORD dwUIChoice;
+    DWORD fdwRevocationChecks;
+    DWORD dwUnionChoice;
+    union {
+        struct WINTRUST_FILE_INFO_* pFile;
+        struct WINTRUST_CATALOG_INFO_* pCatalog;
+        struct WINTRUST_BLOB_INFO_* pBlob;
+        struct WINTRUST_SGNR_INFO_* pSgnr;
+        struct WINTRUST_CERT_INFO_* pCert;
+    };
+    DWORD dwStateAction;
+    HANDLE hWVTStateData;
+    WCHAR* pwszURLReference;
+    DWORD dwProvFlags;
+    DWORD dwUIContext;
+    WINTRUST_SIGNATURE_SETTINGS* pSignatureSettings;
+} SL_WINTRUST_DATA;
+#define WINTRUST_DATA SL_WINTRUST_DATA
+#endif
+
 #define GetProc(hModule, procName, proc) (((NULL == proc) && (NULL == (*((FARPROC*)&proc) = GetProcAddress(hModule, procName)))) ? FALSE : TRUE)
 
 typedef BOOL(WINAPI* PfnCryptMsgClose)(IN HCRYPTMSG hCryptMsg);

@@ -441,6 +441,11 @@ struct GPUSettings {
     Setting<bool> fsr_enabled{false};
     Setting<bool> rcas_enabled{true};
     Setting<int> rcas_attenuation{250};
+    // Second Son's post effects (video_core/renderer_vulkan/vk_effects.h), F3 -> Graphics.
+    Setting<bool> depth_of_field_enabled{true};
+    Setting<bool> motion_blur_enabled{true};
+    Setting<bool> lens_flare_enabled{true};
+    Setting<int> dlss_output_mode{0}; ///< vk_dlss_upscale.h: 0 auto, 1 DLAA 1080p, 2 1440p, 3 2160p
     // TODO add overrides
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -463,6 +468,10 @@ struct GPUSettings {
             make_override<GPUSettings>("direct_memory_access_enabled",
                                        &GPUSettings::direct_memory_access_enabled),
             make_override<GPUSettings>("vblank_frequency", &GPUSettings::vblank_frequency),
+            make_override<GPUSettings>("depth_of_field_enabled", &GPUSettings::depth_of_field_enabled),
+            make_override<GPUSettings>("motion_blur_enabled", &GPUSettings::motion_blur_enabled),
+            make_override<GPUSettings>("lens_flare_enabled", &GPUSettings::lens_flare_enabled),
+            make_override<GPUSettings>("dlss_output_mode", &GPUSettings::dlss_output_mode),
         };
     }
 };
@@ -471,7 +480,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    readbacks_mode, readback_linear_images_enabled,
                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
                                    vblank_frequency, full_screen, full_screen_mode, present_mode,
-                                   hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation)
+                                   hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+                                   depth_of_field_enabled, motion_blur_enabled, lens_flare_enabled,
+                                   dlss_output_mode)
 // -------------------------------
 // Vulkan settings
 // -------------------------------
@@ -754,8 +765,12 @@ public:
     SETTING_FORWARD(m_gpu, InternalScreenWidth, internal_screen_width)
     SETTING_FORWARD_BOOL(m_gpu, HdrAllowed, hdr_allowed)
     SETTING_FORWARD_BOOL(m_gpu, FsrEnabled, fsr_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, DepthOfFieldEnabled, depth_of_field_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, MotionBlurEnabled, motion_blur_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, LensFlareEnabled, lens_flare_enabled)
     SETTING_FORWARD_BOOL(m_gpu, RcasEnabled, rcas_enabled)
     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)
+    SETTING_FORWARD(m_gpu, DlssOutputMode, dlss_output_mode)
     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackLinearImagesEnabled, readback_linear_images_enabled)
     SETTING_FORWARD_BOOL(m_gpu, DirectMemoryAccessEnabled, direct_memory_access_enabled)

@@ -3,6 +3,9 @@
 
 project(ImGui_Resources)
 
+if (NOT DEFINED IMGUI_FONT_EMBED)
+    set(IMGUI_FONT_EMBED $<TARGET_FILE:Dear_ImGui_FontEmbed>)
+endif()
 add_executable(Dear_ImGui_FontEmbed ${CMAKE_SOURCE_DIR}/externals/dear_imgui/misc/fonts/binary_to_compressed_c.cpp)
 
 set(FONT_LIST
@@ -26,7 +29,7 @@ FOREACH (FONT_FILE ${FONT_LIST})
     add_custom_command(
         OUTPUT "${OUTPUT}.g.cpp"
         COMMAND ${CMAKE_COMMAND} -E make_directory "generated_fonts/imgui_fonts"
-        COMMAND $<TARGET_FILE:Dear_ImGui_FontEmbed> -nostatic "${CMAKE_CURRENT_SOURCE_DIR}/fonts/${FONT_FILE}" ${fontname_cpp} > "${OUTPUT}.g.cpp"
+        COMMAND ${IMGUI_FONT_EMBED} -nostatic "${CMAKE_CURRENT_SOURCE_DIR}/fonts/${FONT_FILE}" ${fontname_cpp} > "${OUTPUT}.g.cpp"
         DEPENDS Dear_ImGui_FontEmbed "fonts/${FONT_FILE}"
         USES_TERMINAL
     )

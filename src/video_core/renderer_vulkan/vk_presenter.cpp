@@ -30,6 +30,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_dlss5.h"
+#include "video_core/renderer_vulkan/vk_dlss_fg.h"
 #include "video_core/renderer_vulkan/vk_dlss_upscale.h"
 #include "video_core/renderer_vulkan/vk_memory_budget.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -38,6 +39,7 @@
 #include "video_core/texture_cache/image.h"
 
 #include <algorithm>
+#include <thread>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -649,6 +651,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     LOG_INFO(Render_Vulkan, "Presenter: {} presentation frames (swapchain images {})", num_images,
              swapchain.GetImageCount());
     const vk::Device device = instance.GetDevice();
+    DlssFg::SetAllocator(instance.GetAllocator()); // SHADPS4_DLSS_FG snapshots
 
     // Create presentation frames.
     present_frames.resize(num_images);
@@ -690,6 +693,7 @@ Presenter::~Presenter() {
 
     const vk::Device device = instance.GetDevice();
     for (auto& frame : present_frames) {
+        DestroyGeneratedImages(&frame);
         vmaDestroyImage(instance.GetAllocator(), frame.image, frame.allocation);
         device.destroyImageView(frame.image_view);
         device.destroyFence(frame.present_done);
@@ -772,6 +776,114 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
 
     frame->imgui_texture = ImGui::Vulkan::AddTexture(view, vk::ImageLayout::eShaderReadOnlyOptimal);
     frame->is_hdr = swapchain.GetHDR();
+}
+
+void Presenter::DestroyGeneratedImages(Frame* frame) {
+    const vk::Device device = instance.GetDevice();
+    for (auto& g : frame->generated) {
+        if (g.imgui_texture) {
+            ImGui::Vulkan::RemoveTexture(g.imgui_texture);
+        }
+        if (g.view) {
+            device.destroyImageView(g.view);
+        }
+        if (g.image) {
+            vmaDestroyImage(instance.GetAllocator(), g.image, g.allocation);
+        }
+        g = {};
+    }
+    frame->generated_count = 0;
+}
+
+void Presenter::EnsureGeneratedImages(Frame* frame, u32 count) {
+    const vk::Format format = swapchain.GetSurfaceFormat().format;
+    if (frame->generated_width != frame->width || frame->generated_height != frame->height ||
+        frame->generated_format != format) {
+        // The frame's previous presents finished (GetRenderFrame waited for its fence).
+        DestroyGeneratedImages(frame);
+        frame->generated_width = frame->width;
+        frame->generated_height = frame->height;
+        frame->generated_format = format;
+    }
+    const vk::Device device = instance.GetDevice();
+    for (u32 k = 0; k < count && k < frame->generated.size(); ++k) {
+        auto& g = frame->generated[k];
+        if (g.image) {
+            continue;
+        }
+        const VkImageCreateInfo image_info = static_cast<VkImageCreateInfo>(vk::ImageCreateInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = format,
+            .extent = {frame->width, frame->height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                     vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst |
+                     vk::ImageUsageFlagBits::eColorAttachment,
+        });
+        const VmaAllocationCreateInfo alloc_info{.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VkImage image{};
+        if (vmaCreateImage(instance.GetAllocator(), &image_info, &alloc_info, &image,
+                           &g.allocation, nullptr) != VK_SUCCESS) {
+            g = {};
+            return;
+        }
+        g.image = vk::Image{image};
+        g.view = Check<"create generated frame view">(device.createImageView({
+            .image = g.image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = format,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        }));
+        g.imgui_texture = ImGui::Vulkan::AddTexture(g.view, vk::ImageLayout::eShaderReadOnlyOptimal);
+    }
+}
+
+bool Presenter::FrameGenerationWanted(Frame* frame, bool upscaled) {
+    const u32 count = DlssFg::Count();
+    if (count == 0) {
+        return false;
+    }
+    if (!DlssFg::TakeSnapshot() || !upscaled || frame->is_hdr) {
+        return false; // menus, videos, loading: the rendered frames only (and a reset)
+    }
+    const vk::Format format = swapchain.GetSurfaceFormat().format;
+    if (DlssFg::NeedsRecreate(frame->width, frame->height, format)) {
+        // A new size: the old feature's last frame must be done on the GPU.
+        if (fg_last_tick) {
+            draw_scheduler.Wait(fg_last_tick);
+        }
+        DlssFg::ReleaseFeature();
+    }
+    EnsureGeneratedImages(frame, count);
+    for (u32 k = 0; k < count; ++k) {
+        if (!frame->generated[k].image) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Presenter::RecordFrameGeneration(vk::CommandBuffer cmdbuf, Frame* frame, bool upscaled) {
+    const u32 count = std::min<u32>(DlssFg::Count(), u32(frame->generated.size()));
+    frame->generated_count = 0;
+    if (!upscaled || count == 0) {
+        return;
+    }
+    std::array<DlssFg::Output, 3> outputs{};
+    for (u32 k = 0; k < count; ++k) {
+        outputs[k] = {frame->generated[k].image, frame->generated[k].view};
+    }
+    if (DlssFg::Record(cmdbuf, instance.GetDevice(), frame->image, frame->image_view,
+                       swapchain.GetSurfaceFormat().format, frame->width, frame->height,
+                       outputs.data(), count)) {
+        frame->generated_count = count;
+    }
+    // NGX's own compute state is left bound in this command buffer.
+    draw_scheduler.GetDynamicState().Invalidate();
+    GraphicsBindTracker::Invalidate();
+    draw_scheduler.InvalidateNativeHeaps();
 }
 
 Frame* Presenter::PrepareLastFrame() {
@@ -947,7 +1059,10 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         const char* e = std::getenv("SHADPS4_PRESENT_ASYNC");
         return e && e[0] == '1';
     }();
-    if (present_async && capture_game_only_count == 0 &&
+    // SHADPS4_DLSS_FG (vk_dlss_fg.h): frame generation records on this thread (synchronous
+    // path), after the post pass.
+    const bool frame_gen = FrameGenerationWanted(frame, dlss_job.has_value());
+    if (present_async && capture_game_only_count == 0 && !frame_gen &&
         GuestLayout(vk::ImageLayout::eShaderReadOnlyOptimal) ==
             vk::ImageLayout::eShaderReadOnlyOptimal) { // q6b (3)
         image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead,
@@ -1016,6 +1131,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     if (dlss_job) {
         Dlss::RecordComposite(cmdbuf, *dlss_job);
         pp_pass.Render(cmdbuf, dlss_job->out_view, dlss_job->size, *frame, pp_settings);
+        if (frame_gen) {
+            RecordFrameGeneration(cmdbuf, frame, true);
+        }
     } else {
         if (dlss5_video) {
             if (const auto v = Dlss5::ApplyVideo(instance, cmdbuf, image_view, image_size.width,
@@ -1042,6 +1160,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // Flush frame creation commands.
     frame->ready_semaphore = draw_scheduler.GetMasterSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
+    if (frame->generated_count) {
+        fg_last_tick = frame->ready_tick;
+    }
     SubmitInfo info{};
     draw_scheduler.Flush(info);
     return frame;
@@ -1122,9 +1243,41 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame) {
+    // SHADPS4_DLSS_FG (vk_dlss_fg.h): the generated frames first, spread over the interval
+    // between rendered frames, then the rendered one.
+    const u32 generated = is_reusing_frame ? 0 : frame->generated_count;
+    if (generated) {
+        const auto now = std::chrono::steady_clock::now();
+        if (fg_last_present.time_since_epoch().count()) {
+            const double ms =
+                std::chrono::duration<double, std::milli>(now - fg_last_present).count();
+            if (ms > 2.0 && ms < 100.0) {
+                fg_interval_ms = fg_interval_ms * 0.85 + ms * 0.15;
+            }
+        }
+        fg_last_present = now;
+        const auto slot =
+            std::chrono::duration<double, std::milli>(fg_interval_ms / (generated + 1));
+        for (u32 k = 0; k < generated; ++k) {
+            if (k > 0) {
+                std::this_thread::sleep_until(
+                    now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(slot * k));
+            }
+            PresentImpl(frame, false, static_cast<int>(k));
+        }
+        std::this_thread::sleep_until(
+            now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(slot * generated));
+    } else if (!is_reusing_frame) {
+        fg_last_present = {};
+    }
+    PresentImpl(frame, is_reusing_frame, -1);
+}
+
+void Presenter::PresentImpl(Frame* frame, bool is_reusing_frame, int generated) {
+    const bool is_generated = generated >= 0;
     // Free the frame for reuse
     const auto free_frame = [&] {
-        if (!is_reusing_frame) {
+        if (!is_reusing_frame && !is_generated) {
             last_submit_frame = frame;
             std::scoped_lock fl{free_mutex};
             free_queue.push(frame);
@@ -1153,9 +1306,14 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     // Reset fence for queue submission. Do it here instead of GetRenderFrame() because we may
     // skip frame because of slow swapchain recreation. If a frame skip occurs, we skip signal
     // the frame's present fence and future GetRenderFrame() call will hang waiting for this frame.
-    const auto reset_result = instance.GetDevice().resetFences(frame->present_done);
-    ASSERT_MSG(reset_result == vk::Result::eSuccess,
-               "Unexpected error resetting present done fence: {}", vk::to_string(reset_result));
+    if (!is_generated) {
+        const auto reset_result = instance.GetDevice().resetFences(frame->present_done);
+        ASSERT_MSG(reset_result == vk::Result::eSuccess,
+                   "Unexpected error resetting present done fence: {}",
+                   vk::to_string(reset_result));
+    }
+    const vk::Image shown_image =
+        is_generated ? frame->generated[generated].image : frame->image;
 
     ImGuiID dockId = ImGui::Core::NewFrame(is_reusing_frame);
 
@@ -1165,7 +1323,8 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     auto& scheduler = present_scheduler;
     auto command_access = scheduler.AcquireCommandBuffer();
     const auto cmdbuf = command_access.Handle();
-    const u32 capture_with_overlays_count = VideoCore::ConsumeWithOverlaysScreenshotRequests();
+    const u32 capture_with_overlays_count =
+        is_generated ? 0 : VideoCore::ConsumeWithOverlaysScreenshotRequests();
     std::vector<ScreenshotReadback> pending_screenshots;
     if (capture_with_overlays_count > 0) {
         pending_screenshots.reserve(1);
@@ -1207,7 +1366,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
                 .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = frame->image,
+                .image = shown_image,
                 .subresourceRange{
                     .aspectMask = vk::ImageAspectFlagBits::eColor,
                     .baseMipLevel = 0,
@@ -1231,7 +1390,8 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
             ImGui::SetNextWindowDockID(dockId, ImGuiCond_Once);
             if (ImGui::Begin("Display##game_display", nullptr, ImGuiWindowFlags_NoNav)) {
-                auto game_texture = frame->imgui_texture;
+                auto game_texture = is_generated ? frame->generated[generated].imgui_texture
+                                                 : frame->imgui_texture;
                 auto game_width = frame->width;
                 auto game_height = frame->height;
 
@@ -1360,7 +1520,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     info.AddWait(swapchain.GetImageAcquiredSemaphore());
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
     info.AddSignal(swapchain.GetPresentReadySemaphore());
-    info.AddSignal(frame->present_done);
+    if (!is_generated) {
+        info.AddSignal(frame->present_done);
+    }
     const auto flush_start = Common::FaultMonitor::Now();
     scheduler.Flush(info);
     // This frame's ImGui draws are submitted (texture destroys wait for two of these).
@@ -1394,7 +1556,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame) {
     Common::FaultMonitor::CountPresentPhases(acquire_ns, flush_ns, lock_ns, khr_ns);
 
     free_frame();
-    if (!is_reusing_frame) {
+    if (!is_reusing_frame && !is_generated) {
         // Drive the RenderDoc capture state machine on real flips only, so a capture starts just
         // after one present and ends at the next: exactly one displayed frame.
         VideoCore::OnFrameBoundary();
@@ -1416,6 +1578,7 @@ Frame* Presenter::GetRenderFrame() {
         frame = free_queue.front();
         free_queue.pop();
     }
+    frame->generated_count = 0;
     const u64 queue_ns = Common::FaultMonitor::SinceNs(queue_start);
 
     const vk::Device device = instance.GetDevice();

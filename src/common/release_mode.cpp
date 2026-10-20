@@ -157,7 +157,13 @@ struct FlagsFile {
     }
 };
 
+#if defined(__GNUC__) || defined(__clang__)
+// MinGW / clang: #pragma init_seg is MSVC-only. Without this the flags were applied after the
+// other static initializers had read their SHADPS4_* variables (every fast path off: ~15 fps).
+__attribute__((init_priority(101))) FlagsFile g_flags_file;
+#else
 FlagsFile g_flags_file;
+#endif
 
 std::optional<std::filesystem::path> ReadSavedGame(const std::filesystem::path& file) {
     std::ifstream in{file, std::ios::binary};

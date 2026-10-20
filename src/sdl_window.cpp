@@ -33,6 +33,7 @@
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "video_core/renderer_vulkan/vk_dlss_fg.h"
 #include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/texture_cache/tex_replace.h"
 
@@ -385,7 +386,21 @@ void WindowSDL::WaitEvent() {
                 Input::g_synth_rattle_until.store(SDL_GetTicks() + 600, std::memory_order_relaxed);
             }
         }
-        if (Vulkan::Dlss::Enabled() && event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+            event.key.key == SDLK_HOME && (event.key.mod & SDL_KMOD_SHIFT)) {
+            // SHADPS4_DLSS_FG (vk_dlss_fg.h): Shift+Home = frame generation on / off.
+            if (!Vulkan::DlssFg::Ready()) {
+                Overlay::ShowNotice(Vulkan::DlssFg::Wanted() == 0
+                                        ? "DLSS Frame Generation: dlssg folder missing"
+                                        : "DLSS Frame Generation not available (see the log)");
+            } else {
+                const bool on = !Vulkan::DlssFg::g_user_on.load(std::memory_order_relaxed);
+                Vulkan::DlssFg::g_user_on.store(on, std::memory_order_relaxed);
+                LOG_INFO(Render_Vulkan, "DLSS FG: {} (Shift+Home)", on ? "on" : "off");
+                Overlay::ShowNotice(on ? "DLSS Frame Generation: ON"
+                                       : "DLSS Frame Generation: OFF");
+            }
+        } else if (Vulkan::Dlss::Enabled() && event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
             (event.key.key == SDLK_HOME || event.key.key == SDLK_PAGEDOWN ||
              event.key.key == SDLK_INSERT)) {
             // SHADPS4_DLSS (vk_dlss.h): Home = DLSS on / off, Page Down = jitter sign combination

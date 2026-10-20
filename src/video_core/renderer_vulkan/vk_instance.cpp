@@ -17,6 +17,7 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "video_core/renderer_vulkan/vk_dlss_fg.h"
 #include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -185,6 +186,7 @@ Instance::~Instance() {
         // Streamline goes before the device (its rule); the GPU must be done with its work.
         (void)device->waitIdle();
         Dlss5::Shutdown();
+        DlssFg::Shutdown();
         Dlss::Shutdown();
     }
     ImGui::Core::Shutdown(GetDevice());
@@ -241,7 +243,7 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    boost::container::static_vector<const char*, 48> enabled_extensions;
+    boost::container::static_vector<const char*, 64> enabled_extensions;
     // SHADPS4_SKIP_DEVICE_EXT=a,b (2026-10-17, diagnosis): treat these extensions as unavailable.
     static const std::string skip_device_ext = [] {
         const char* v = std::getenv("SHADPS4_SKIP_DEVICE_EXT");
@@ -423,6 +425,23 @@ bool Instance::CreateDevice() {
                 } else if (!add_extension(ext)) {
                     Dlss5::Disable("the GPU driver lacks a Vulkan extension the model needs");
                 }
+            }
+        }
+    }
+
+    // SHADPS4_DLSS_FG (vk_dlss_fg.h): NGX frame generation's device extensions, with DLSS.
+    bool dlss_fg_device = false;
+    if (dlss_device && DlssFg::Wanted() > 0) {
+        dlss_fg_device = true;
+        for (const char* ext : DlssFg::DeviceExtensions(*instance, physical_device)) {
+            if (std::ranges::any_of(enabled_extensions,
+                                    [ext](const char* e) { return std::strcmp(e, ext) == 0; }) ||
+                std::strcmp(ext, "VK_EXT_buffer_device_address") == 0) {
+                continue;
+            }
+            if (!add_extension(ext)) {
+                LOG_WARNING(Render_Vulkan, "DLSS FG: device extension {} missing - off", ext);
+                dlss_fg_device = false;
             }
         }
     }
@@ -872,6 +891,9 @@ bool Instance::CreateDevice() {
     present_queue = device->getQueue(queue_family_index, 0);
     if (dlss_device || Dlss::Mode() == 2) {
         Dlss::DeviceCreated(*instance, physical_device, *device, queue_family_index, 0);
+    }
+    if (dlss_fg_device && Dlss::g_ready.load(std::memory_order_relaxed)) {
+        DlssFg::DeviceCreated(*instance, physical_device, *device);
     }
     if (dlss_device && Dlss::g_ready.load(std::memory_order_relaxed)) {
         Dlss5::DeviceCreated(*instance, physical_device, *device);

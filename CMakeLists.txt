@@ -62,7 +62,9 @@ endif()
 if (ARCHITECTURE STREQUAL "x86_64")
     # Target x86-64-v3 CPU architecture as this is a good balance between supporting performance critical
     # instructions like AVX2 and maintaining support for older CPUs.
-    add_compile_options(-march=x86-64-v3)
+    # X86_MARCH: zig's clang spells it x86_64_v3 (the MinGW cross build passes that).
+    set(X86_MARCH "x86-64-v3" CACHE STRING "-march value")
+    add_compile_options(-march=${X86_MARCH})
 endif()
 
 cmake_host_system_information(RESULT PROC_INFO QUERY PROCESSOR_DESCRIPTION)
@@ -1135,6 +1137,8 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_dlss.cpp
                src/video_core/renderer_vulkan/vk_dlss_upscale.h
                src/video_core/renderer_vulkan/vk_dlss_upscale.cpp
+               src/video_core/renderer_vulkan/vk_dlss_fg.cpp
+               src/video_core/renderer_vulkan/vk_dlss_fg.h
                src/video_core/renderer_vulkan/vk_dlss5.h
                src/video_core/renderer_vulkan/vk_dlss5.cpp
                src/video_core/renderer_vulkan/vk_resource_pool.cpp
@@ -1237,13 +1241,16 @@ set(EMULATOR src/emulator.cpp
 )
 
 # shadNet protobuf generation
+if (NOT DEFINED SHADNET_PROTOC)
+    set(SHADNET_PROTOC protobuf::protoc)
+endif()
 set(SHADNET_PROTO_OUT "${CMAKE_CURRENT_BINARY_DIR}/shadnet_proto_gen")
 file(MAKE_DIRECTORY "${SHADNET_PROTO_OUT}")
 add_custom_command(
     OUTPUT
         "${SHADNET_PROTO_OUT}/shadnet.pb.cc"
         "${SHADNET_PROTO_OUT}/shadnet.pb.h"
-    COMMAND protobuf::protoc
+    COMMAND ${SHADNET_PROTOC}
         "--proto_path=${CMAKE_CURRENT_SOURCE_DIR}/src/shadnet"
         "--cpp_out=${SHADNET_PROTO_OUT}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/shadnet/shadnet.proto"
@@ -1362,6 +1369,12 @@ endif()
 
 if (WIN32)
     target_link_libraries(shadps4 PRIVATE mincore wepoll wbemuuid)
+    if (MINGW)
+        # tlg cross build: what MSVC's umbrella libs (mincore, synchronization) and comsuppw give.
+        target_sources(shadps4 PRIVATE src/common/mingw/comsupp_shim.cpp)
+        target_link_libraries(shadps4 PRIVATE api-ms-win-core-memory-l1-1-5 api-ms-win-core-memory-l1-1-6 api-ms-win-core-memory-l1-1-7
+                              api-ms-win-core-synch-l1-2-0 crypt32 rpcrt4 oleaut32 ole32 winmm)
+    endif()
 
     if (MSVC)
         # MSVC likes putting opinions on what people can use, disable:
@@ -1462,4 +1475,9 @@ install(TARGETS shadps4 BUNDLE DESTINATION .)
 else()
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# tlg cross build (zig clang): -O1 and up on this file need more than 8 GB of memory (an optimizer blow-up); -O0 needs ~1 GB.
+if (MINGW)
+    set_source_files_properties(src/core/libraries/system/systemservice.cpp PROPERTIES COMPILE_OPTIONS "-O0;-fno-sanitize=undefined")
 endif()

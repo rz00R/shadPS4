@@ -8,6 +8,7 @@
 #include "common/logging/log.h"
 #include "video_core/host_shaders/dlss_composite_comp.h"
 #include "video_core/renderer_vulkan/vk_dlss_upscale.h"
+#include "core/emulator_settings.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -120,11 +121,30 @@ void Upscaler::SetOutputSize(u32 width, u32 height) {
     }();
     // Insert: 1.5x the window (supersampling), scaled down to the window by the post pass.
     const float scale = force ? 1.0f : g_output_scale.load(std::memory_order_relaxed);
-    const u32 out_w = std::min<u32>(static_cast<u32>(width * scale + 0.5f), 7680);
-    const u32 out_h = std::min<u32>(static_cast<u32>(height * scale + 0.5f), 4320);
+    // F3 -> Graphics -> DLSS output (EmulatorSettings dlss_output_mode): auto = the window size,
+    // DLAA = 1920x1080 in place (the post pass scales it to the window), or a fixed 1440p /
+    // 2160p output (scaled to the window by the post pass when it differs).
+    int mode = g_output_mode.load(std::memory_order_relaxed);
+    if (mode < 0) {
+        mode = std::clamp(EmulatorSettings.GetDlssOutputMode(), 0, 3);
+        g_output_mode.store(mode, std::memory_order_relaxed);
+    }
+    u32 base_w = width, base_h = height;
+    if (mode == OutputDlaa) {
+        base_w = GameWidth;
+        base_h = GameHeight;
+    } else if (mode == Output1440) {
+        base_w = 2560;
+        base_h = 1440;
+    } else if (mode == Output2160) {
+        base_w = 3840;
+        base_h = 2160;
+    }
+    const u32 out_w = std::min<u32>(static_cast<u32>(base_w * scale + 0.5f), 7680);
+    const u32 out_h = std::min<u32>(static_cast<u32>(base_h * scale + 0.5f), 4320);
     output_size = force ? vk::Extent2D{GameWidth, GameHeight} : vk::Extent2D{out_w, out_h};
-    // DLSS needs an output larger than its input; smaller windows keep DLAA in place.
-    const bool on = (force || (width > GameWidth && height > GameHeight)) && g_ready.load() &&
+    // DLSS needs an output larger than its input; otherwise DLAA stays in place.
+    const bool on = (force || (out_w > GameWidth && out_h > GameHeight)) && g_ready.load() &&
                     instance.IsDynamicColorWriteMaskSupported();
     if (on != g_hud_layer.load(std::memory_order_relaxed)) {
         LOG_INFO(Render_Vulkan, "DLSS upscale: {} (output {}x{}{})", on ? "on" : "off",

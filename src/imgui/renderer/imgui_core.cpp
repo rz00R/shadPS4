@@ -33,6 +33,10 @@ static std::vector<ImGui::Layer*> layers;
 // frames.
 static std::deque<std::pair<bool, ImGui::Layer*>> change_layers{};
 static std::mutex change_layers_mutex{};
+// The window thread queues input events (ProcessEvent) while the present thread's NewFrame
+// consumes the same queue: one lock for both (an index into the queue went out of range,
+// assert in ImGui::Sdl::UpdateKeyModifiers, 2026-10-20).
+static std::mutex input_mutex{};
 
 static ImGuiID dock_id;
 static std::atomic<std::uint32_t> force_gamepad_input_capture_count{0};
@@ -172,7 +176,10 @@ void Shutdown(const vk::Device& device) {
 }
 
 bool ProcessEvent(SDL_Event* event) {
-    Sdl::ProcessEvent(event);
+    {
+        std::scoped_lock lock{input_mutex};
+        Sdl::ProcessEvent(event);
+    }
     switch (event->type) {
     // Don't block release/up events
     case SDL_EVENT_MOUSE_MOTION:
@@ -229,8 +236,11 @@ ImGuiID NewFrame(bool is_reusing_frame) {
         }
     }
 
-    Sdl::NewFrame(is_reusing_frame);
-    ImGui::NewFrame();
+    {
+        std::scoped_lock lock{input_mutex};
+        Sdl::NewFrame(is_reusing_frame);
+        ImGui::NewFrame();
+    }
 
     ImGuiWindowFlags flags =
         ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar;

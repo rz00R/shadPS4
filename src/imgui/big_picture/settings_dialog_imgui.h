@@ -137,6 +137,10 @@ private:
     int windowHeightSetting;
     bool hdrAllowedSetting;
     bool fsrEnabledSetting;
+    bool depthOfFieldSetting = true;
+    bool motionBlurSetting = true;
+    bool lensFlareSetting = true;
+    int dlssOutputSetting = 0;
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
 

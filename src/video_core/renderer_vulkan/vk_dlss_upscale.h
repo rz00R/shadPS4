@@ -34,6 +34,10 @@ bool UpscaleWanted();
 /// display buffer is shown), 2 = no alpha on HUD draws, 4 = no clear of the resolve target.
 u32 UpscaleTestBits();
 
+/// F3 -> Graphics -> DLSS output (EmulatorSettings dlss_output_mode); -1 = not read yet.
+enum : int { OutputAuto = 0, OutputDlaa = 1, Output1440 = 2, Output2160 = 3 };
+inline std::atomic<int> g_output_mode{-1};
+
 /// The HUD-layer mode is on for this frame's draws (the presenter decides it each flip).
 inline std::atomic<bool> g_hud_layer{false};
 

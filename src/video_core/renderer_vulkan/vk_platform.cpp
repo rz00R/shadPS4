@@ -26,6 +26,7 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "video_core/renderer_vulkan/vk_dlss_fg.h"
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -210,6 +211,8 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
 
     // SHADPS4_DLSS=1: Streamline starts here, before vkCreateInstance, and adds what it needs.
     Dlss::AddInstanceExtensions(extensions);
+    // SHADPS4_DLSS_FG (vk_dlss_fg.h): NGX frame generation's instance extensions.
+    DlssFg::AddInstanceExtensions(extensions);
 
     // Sanitize extension list
     std::erase_if(extensions, [&](const char* extension) -> bool {

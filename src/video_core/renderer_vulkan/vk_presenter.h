@@ -4,6 +4,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <condition_variable>
 
 #include "core/libraries/videoout/buffer.h"
@@ -38,6 +40,18 @@ struct Frame {
     u8 id{};
 
     ImTextureID imgui_texture;
+
+    // SHADPS4_DLSS_FG (vk_dlss_fg.h): the frames generated before this one, shown first.
+    struct Generated {
+        VmaAllocation allocation{};
+        vk::Image image{};
+        vk::ImageView view{};
+        ImTextureID imgui_texture{};
+    };
+    std::array<Generated, 3> generated{};
+    u32 generated_count{};
+    u32 generated_width{}, generated_height{};
+    vk::Format generated_format{};
 };
 
 enum SchedulerType {
@@ -117,7 +131,21 @@ private:
 
     void SetExpectedGameSize(s32 width, s32 height);
 
+    /// SHADPS4_DLSS_FG: one swapchain present; `generated` >= 0 shows that generated frame
+    /// (no fence, no flip count), -1 the frame itself.
+    void PresentImpl(Frame* frame, bool is_reusing_frame, int generated);
+    void EnsureGeneratedImages(Frame* frame, u32 count);
+    void DestroyGeneratedImages(Frame* frame);
+    /// PrepareFrame, after the post pass: the generated frames into `frame` (or none).
+    void RecordFrameGeneration(vk::CommandBuffer cmdbuf, Frame* frame, bool upscaled);
+    /// PrepareFrame, before the command buffer: frame generation runs this flip.
+    bool FrameGenerationWanted(Frame* frame, bool upscaled);
+
 private:
+    u64 fg_last_tick{};
+    std::chrono::steady_clock::time_point fg_last_present{};
+    double fg_interval_ms{16.7};
+
     float expected_ratio{1920.0 / 1080.0f};
     u32 expected_frame_width{1920};
     u32 expected_frame_height{1080};

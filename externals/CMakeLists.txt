@@ -21,6 +21,12 @@ if (NOT TARGET Boost::headers)
     add_subdirectory(ext-boost)
 endif()
 
+# fmtlib first when spdlog is told to use an external one (the MinGW cross build passes
+# SPDLOG_FMT_EXTERNAL=ON); otherwise after spdlog, as before.
+if (SPDLOG_FMT_EXTERNAL AND NOT TARGET fmt::fmt)
+    add_subdirectory(fmt)
+endif()
+
 # spdlog
 set(SPDLOG_NO_EXCEPTIONS ON)
 set(SPDLOG_DISABLE_GLOBAL_LOGGER ON)

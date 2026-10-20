@@ -40,6 +40,8 @@
 #include "video_core/amdgpu/mtb_census.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "video_core/renderer_vulkan/vk_effects.h"
+#include "video_core/renderer_vulkan/vk_dlss_fg.h"
 #include "video_core/renderer_vulkan/vk_dlss_upscale.h"
 #include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/amdgpu/native_rec.h"
@@ -1467,6 +1469,9 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_,
       memory{Core::Memory::Instance()}, mapped_ranges{shared.mapped_ranges},
       mapped_ranges_mutex{shared.mapped_ranges_mutex}, pipeline_cache{shared.pipeline_cache},
       occlusion{shared.occlusion}, fault_process_pending{shared.fault_process_pending} {
+    // F3 -> Graphics (vk_effects.h): the saved effect choices.
+    Effects::Apply(EmulatorSettings.IsDepthOfFieldEnabled(), EmulatorSettings.IsMotionBlurEnabled(),
+                   EmulatorSettings.IsLensFlareEnabled());
     if (AmdGpu::NativeRec::g_gpu_mode == 1) {
         NativeGpuRingInit(this); // SHADPS4_NATIVE_GPU_DIRECT=1: the job threads' ring hook
     }
@@ -1593,6 +1598,11 @@ Rasterizer::DrawClass Rasterizer::ClassifyDraw(const AmdGpu::Regs& regs) {
         return depth_copy && stencil_copy ? DrawClass::DepthStencilCopy
                : depth_copy               ? DrawClass::DepthCopy
                                           : DrawClass::StencilCopy;
+    }
+
+    // F3 -> Graphics (vk_effects.h): depth of field, motion blur or lens glare switched off.
+    if (Effects::Skip(regs.ps_program.Address<VAddr>())) [[unlikely]] {
+        return DrawClass::PrimitiveNone;
     }
 
     // SHADPS4_DLSS (vk_dlss.h): the T2x resolve; one relaxed load + compare (0 while off).
@@ -1743,6 +1753,18 @@ void Rasterizer::DlssResolve() {
             if (upscaler && evaluated) {
                 upscaler->SceneWritten(cmdbuf);
                 hud_layer = true;
+                // SHADPS4_DLSS_FG (vk_dlss_fg.h): this frame's depth and motion for the frame
+                // generation at the flip (the targets are reused before it).
+                if (DlssFg::Count() != 0) {
+                    motion->Transit(vk::ImageLayout::eTransferSrcOptimal,
+                                    vk::AccessFlagBits2::eTransferRead, {}, cmdbuf);
+                    depth->Transit(vk::ImageLayout::eTransferSrcOptimal,
+                                   vk::AccessFlagBits2::eTransferRead, {}, cmdbuf);
+                    const auto src = GuestLayout(vk::ImageLayout::eTransferSrcOptimal);
+                    DlssFg::Snapshot(cmdbuf, depth->GetImage(), depth->info.pixel_format, src,
+                                     motion->GetImage(), motion->info.pixel_format, src,
+                                     depth->info.size.width, depth->info.size.height);
+                }
             }
             // Streamline / NGX bind their own compute state into this command buffer (checklist
             // sec. 4): nothing the next draw relies on may be assumed still bound.

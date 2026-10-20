@@ -12,6 +12,7 @@
 #include "shader_recompiler/info.h"
 #include "video_core/amdgpu/regs.h"
 #include "video_core/renderer_vulkan/vk_common.h"
+#include "video_core/renderer_vulkan/vk_dlss_fg.h"
 
 // SHADPS4_DLSS (2026-10-17, LATER-PLAN 2; plan: notes/study-dlss-plan-2026-10-14.md, build D1;
 // Streamline facts: notes/dlss-streamline-checklist-2026-10-17.md).
@@ -88,6 +89,7 @@ inline thread_local u8 t_phase = 0;
 
 /// Where the weights program's Info is known: remember its address and its CB's user-data slot.
 inline void NoteWeightsInfo(const Shader::Info& info, VAddr base) {
+    DlssFg::NoteInfo(info, base); // SHADPS4_DLSS_FG: the camera reprojection's CB
     if (info.pgm_hash != WeightsPsHash || info.stage != Shader::Stage::Fragment || !Enabled())
         [[likely]] {
         return;
@@ -128,6 +130,7 @@ inline void NoteWeightsInfo(const Shader::Info& info, VAddr base) {
 
 /// Next to every ClassifyDraw call that parses the stream in order (front, lean workers, inline).
 inline void NoteDraw(const AmdGpu::Regs& regs) {
+    DlssFg::NoteDraw(regs);
     const u64 w = g_weights_ps.load(std::memory_order_relaxed);
     if (w == 0 || regs.ps_program.Address<VAddr>() != w) [[likely]] {
         return;

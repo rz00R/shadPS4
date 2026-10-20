@@ -1,6 +1,7 @@
 //  SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 //  SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <map>
 #include <ranges>
 #include <ImGuiFileDialog.h>
@@ -13,6 +14,8 @@
 #include "core/devtools/layer.h"
 #include "imgui/imgui_std.h"
 #include "settings_dialog_imgui.h"
+#include "video_core/renderer_vulkan/vk_effects.h"
+#include "video_core/renderer_vulkan/vk_dlss_upscale.h"
 
 CMRC_DECLARE(res);
 
@@ -56,6 +59,10 @@ void SettingsWindow::LoadSettings(std::string profile) {
     windowWidthSetting = EmulatorSettings.GetWindowWidth();
     hdrAllowedSetting = EmulatorSettings.IsHdrAllowed();
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
+    depthOfFieldSetting = EmulatorSettings.IsDepthOfFieldEnabled();
+    motionBlurSetting = EmulatorSettings.IsMotionBlurEnabled();
+    lensFlareSetting = EmulatorSettings.IsLensFlareEnabled();
+    dlssOutputSetting = std::clamp(EmulatorSettings.GetDlssOutputMode(), 0, 3);
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
 
@@ -122,6 +129,12 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetWindowWidth(windowWidthSetting, isSpecific);
     EmulatorSettings.SetHdrAllowed(hdrAllowedSetting, isSpecific);
     EmulatorSettings.SetFsrEnabled(fsrEnabledSetting, isSpecific);
+    EmulatorSettings.SetDepthOfFieldEnabled(depthOfFieldSetting, isSpecific);
+    EmulatorSettings.SetMotionBlurEnabled(motionBlurSetting, isSpecific);
+    EmulatorSettings.SetLensFlareEnabled(lensFlareSetting, isSpecific);
+    Vulkan::Effects::Apply(depthOfFieldSetting, motionBlurSetting, lensFlareSetting); // live
+    EmulatorSettings.SetDlssOutputMode(dlssOutputSetting, isSpecific);
+    Vulkan::Dlss::g_output_mode.store(dlssOutputSetting, std::memory_order_relaxed); // live
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
@@ -694,6 +707,12 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
 
             AddSettingCombo("Display Mode", fullscreenModeSetting, fullscreenModeOptions);
             AddSettingCombo("Present Mode", presentModeSetting, presentModeOptions);
+            AddSettingCombo("DLSS Output", dlssOutputSetting,
+                            {"Auto (window size)", "DLAA (native 1080p)", "1080p -> 1440p",
+                             "1080p -> 2160p (4K)"});
+            AddSettingCheckbox("Motion Blur", motionBlurSetting);
+            AddSettingCheckbox("Depth of Field", depthOfFieldSetting);
+            AddSettingCheckbox("Lens Flare (lens dirt)", lensFlareSetting);
             AddSettingSliderInt("Window Width", windowWidthSetting, 0, 8000);
             AddSettingSliderInt("Window Height", windowHeightSetting, 0, 7000);
             AddSettingCheckbox("Enable HDR", hdrAllowedSetting);
