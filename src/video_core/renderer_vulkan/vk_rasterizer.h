@@ -330,6 +330,9 @@ public:
     void UpdateSceneLodBias();
     /// The bias for a pipeline's samplers (0 unless a graphics pipeline with >= 5 colour targets).
     float SamplerLodBias(const Pipeline* pipeline) const;
+    /// SHADPS4_DLSS_HALTON: the draw being begun is geometry (not a full-screen pass).
+    bool HaltonGeometryDraw() const;
+    bool halton_indirect_draw{};
     float scene_lod_bias{};     ///< in effect (back thread)
     float draw_lod_bias{};      ///< the draw BindResources is binding (BindTextures and memos)
     u64 dlss_calls{};

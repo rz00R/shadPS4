@@ -1672,6 +1672,19 @@ static void ApplySceneLodBias(AmdGpu::Sampler& ssharp, float bias) {
     ssharp.lod_bias.Assign(static_cast<u64>(static_cast<u32>(biased) & 0x3fffu));
 }
 
+bool Rasterizer::HaltonGeometryDraw() const {
+    // SHADPS4_DLSS_HALTON: only geometry is shifted, never a full-screen pass drawn with the scene
+    // depth (lighting, fog, decals over the screen): those read the G-buffer through interpolated
+    // UVs, and a sub-pixel shift there blends neighbouring texels differently every frame (the
+    // smeared / crawling surfaces of the first Halton build, 2026-10-20). The iss_pc rule: more
+    // than 6 indices or more than one instance; indirect draws count as geometry.
+    if (halton_indirect_draw) {
+        return true;
+    }
+    const auto& regs = liverpool->BackRegs();
+    return regs.num_indices > 6 || regs.num_instances.NumInstances() > 1;
+}
+
 float Rasterizer::SamplerLodBias(const Pipeline* pipeline) const {
     if (scene_lod_bias == 0.0f || !pipeline || pipeline->IsCompute()) {
         return 0.0f;
@@ -8655,7 +8668,9 @@ void Rasterizer::DrawIndirectTail(const GraphicsPipeline* pipeline, bool is_inde
     if (!BindResources(pipeline)) {
         return;
     }
+    halton_indirect_draw = true; // SHADPS4_DLSS_HALTON: the registers' index count is not this draw's
     const auto state = BeginRendering(pipeline);
+    halton_indirect_draw = false;
 
     buffer_cache.BindVertexBuffers(*pipeline, GetBoundStage(Shader::LogicalStage::Vertex),
                                    buffer_barriers);
@@ -13341,6 +13356,7 @@ void Rasterizer::RenderStateMemoBegin(RenderState& state) {
                 scene = Dlss::IsSceneDepth(info.guest_address, info.size.width, info.size.height);
             }
         }
+        scene = scene && HaltonGeometryDraw();
         const auto [jx, jy] = Dlss::SceneShift(scene);
         scheduler.GetDynamicState().SetRenderJitter(jx, jy);
     }
@@ -13746,6 +13762,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
             const auto& info = texture_cache.GetImage(db_desc.first).info;
             scene = Dlss::IsSceneDepth(info.guest_address, info.size.width, info.size.height);
         }
+        scene = scene && HaltonGeometryDraw();
         const auto [jx, jy] = Dlss::SceneShift(scene);
         scheduler.GetDynamicState().SetRenderJitter(jx, jy);
     }
