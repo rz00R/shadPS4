@@ -2754,8 +2754,8 @@ void DynamicState::Commit(const Instance& instance, const vk::CommandBuffer& cmd
             const float max_h = static_cast<float>(instance.GetMaxViewportHeight());
             constexpr float bound = 32767.0f; // viewportBoundsRange upper end (NVIDIA)
             for (auto& v : scaled) {
-                v.x *= s;
-                v.y *= s;
+                v.x = v.x * s + render_jitter_x;
+                v.y = v.y * s + render_jitter_y;
                 v.width *= s;
                 v.height *= s;
                 if (v.width > max_w || v.height > max_h || v.x + v.width > bound ||
@@ -2783,7 +2783,17 @@ void DynamicState::Commit(const Instance& instance, const vk::CommandBuffer& cmd
     }
     if (dirty_state.viewports) {
         dirty_state.viewports = false;
-        cmdbuf.setViewportWithCount(viewports);
+        if (render_jitter_x != 0.0f || render_jitter_y != 0.0f) [[unlikely]] {
+            // SHADPS4_DLSS_HALTON: the same as a sub-pixel offset in the projection.
+            Viewports shifted = viewports;
+            for (auto& v : shifted) {
+                v.x += render_jitter_x;
+                v.y += render_jitter_y;
+            }
+            cmdbuf.setViewportWithCount(shifted);
+        } else {
+            cmdbuf.setViewportWithCount(viewports);
+        }
     }
     if (dirty_state.scissors) {
         dirty_state.scissors = false;

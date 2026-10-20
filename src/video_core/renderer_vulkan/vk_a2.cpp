@@ -21,6 +21,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_a2.h"
 #include "video_core/renderer_vulkan/vk_bindless.h"
+#include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_dlss_upscale.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -1065,6 +1066,15 @@ bool StretchTranslator::Impl::Take(const AmdGpu::Regs& regs, const DrawIn& draw)
     if (VideoCore::WaterScale::g_active && WaterScaleTarget(regs, draw.pipeline)) [[unlikely]] {
         VideoCore::WaterScale::g_counters.worker_refusals.fetch_add(1, std::memory_order_relaxed);
         return refuse(RefuseOff);
+    }
+    if (Dlss::g_scene_jitter.load(std::memory_order_relaxed)) [[unlikely]] {
+        // SHADPS4_DLSS_HALTON (vk_dlss.h): the scene passes' viewports carry the back's per-frame
+        // shift, which a worker cannot know in stream order: those draws stay on the back.
+        const auto& db = regs.depth_buffer;
+        if (db.DepthValid() && db.DepthAddress() == Dlss::DepthAddr && db.Pitch() == 1920 &&
+            (db.Height() == 1080 || db.Height() == 1088)) {
+            return refuse(RefuseOff);
+        }
     }
     if (!draw.is_indexed) {
         return refuse(RefuseNotIndexed);

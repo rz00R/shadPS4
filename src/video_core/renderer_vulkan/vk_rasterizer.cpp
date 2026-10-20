@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <tuple>
 #include <array>
 #include <immintrin.h>
 #include <set>
@@ -1735,6 +1736,10 @@ void Rasterizer::DlssResolve() {
             const Dlss::EvalImage target =
                 upscaler ? upscaler->SceneTarget(cmdbuf)
                          : eval_image(out, vk::ImageLayout::eGeneral, true, false);
+            // SHADPS4_DLSS_HALTON (vk_dlss.h): the game's offset plus the shift this frame's
+            // scene passes were drawn with; picks the next frame's shift.
+            std::tie(jx, jy) = Dlss::HaltonResolve(jx, jy, dlss_phase_in, in->info.size.width,
+                                                   target.width, dlss_reset_pending);
             const Dlss::EvalImage motion_eval =
                 eval_image(*motion, vk::ImageLayout::eShaderReadOnlyOptimal, false, false);
             const Dlss::EvalImage depth_eval =
@@ -13284,6 +13289,18 @@ void Rasterizer::RenderStateMemoBegin(RenderState& state) {
     }
     // After the sample-backing switches above (review 2026-10-14): see BeginRendering.
     scheduler.GetDynamicState().SetRenderScale(state.scale, state.skip != 0);
+    {
+        // SHADPS4_DLSS_HALTON (vk_dlss.h): the scene passes' sub-pixel shift.
+        bool scene = false;
+        for (const auto& t : m.targets) {
+            if (t.cb == RenderStateMemo::DepthSlot) {
+                const auto& info = texture_cache.PeekImage(t.id).info;
+                scene = Dlss::IsSceneDepth(info.guest_address, info.size.width, info.size.height);
+            }
+        }
+        const auto [jx, jy] = Dlss::SceneShift(scene);
+        scheduler.GetDynamicState().SetRenderJitter(jx, jy);
+    }
 }
 
 void Rasterizer::RenderStateMemoStore(const GraphicsPipeline* pipeline, const RenderState& state,
@@ -13678,6 +13695,17 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     // The draw's dynamic state is committed before Scheduler::BeginRendering runs: the pass's
     // scale must be in place now (review 2026-10-14 BUG 1; a no-op while the flag is off).
     scheduler.GetDynamicState().SetRenderScale(state.scale, state.skip != 0);
+    {
+        // SHADPS4_DLSS_HALTON (vk_dlss.h): the scene passes' sub-pixel shift, committed with the
+        // draw's viewports like the scale above.
+        bool scene = false;
+        if (db_desc.first) {
+            const auto& info = texture_cache.GetImage(db_desc.first).info;
+            scene = Dlss::IsSceneDepth(info.guest_address, info.size.width, info.size.height);
+        }
+        const auto [jx, jy] = Dlss::SceneShift(scene);
+        scheduler.GetDynamicState().SetRenderJitter(jx, jy);
+    }
     g_ws_prev_reflection = ws_this_reflection;
 
     // Diagnostic: a render pass with no usable attachment at all.

@@ -401,6 +401,28 @@ void WindowSDL::WaitEvent() {
                                        : "DLSS Frame Generation: OFF");
             }
         } else if (Vulkan::Dlss::Enabled() && event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+                   (event.key.key == SDLK_PAGEDOWN || event.key.key == SDLK_INSERT) &&
+                   (event.key.mod & SDL_KMOD_SHIFT)) {
+            // SHADPS4_DLSS_HALTON (vk_dlss.h): Shift+Page Down = Halton jitter on / off (A/B with
+            // the game's two positions), Shift+Insert = its sign combination (calibration).
+            if (!Vulkan::Dlss::g_ready.load(std::memory_order_relaxed)) {
+                Overlay::ShowNotice("DLSS not available (see the log)");
+            } else if (event.key.key == SDLK_PAGEDOWN) {
+                const bool on = !Vulkan::Dlss::g_halton_on.load(std::memory_order_relaxed);
+                Vulkan::Dlss::g_halton_on.store(on, std::memory_order_relaxed);
+                LOG_INFO(Render_Vulkan, "DLSS: Halton jitter {} (Shift+Page Down)", on ? "on" : "off");
+                Overlay::ShowNotice(on ? "DLSS jitter: Halton" : "DLSS jitter: game only (2 positions)");
+            } else {
+                const u32 signs =
+                    (Vulkan::Dlss::g_halton_signs.load(std::memory_order_relaxed) + 1) & 3;
+                Vulkan::Dlss::g_halton_signs.store(signs, std::memory_order_relaxed);
+                LOG_INFO(Render_Vulkan, "DLSS: Halton signs {} (Shift+Insert)", signs);
+                static const char* const names[] = {
+                    "Halton signs: 0 (+x +y)", "Halton signs: 1 (-x +y)",
+                    "Halton signs: 2 (+x -y)", "Halton signs: 3 (-x -y)"};
+                Overlay::ShowNotice(names[signs]);
+            }
+        } else if (Vulkan::Dlss::Enabled() && event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
             (event.key.key == SDLK_HOME || event.key.key == SDLK_PAGEDOWN ||
              event.key.key == SDLK_INSERT)) {
             // SHADPS4_DLSS (vk_dlss.h): Home = DLSS on / off, Page Down = jitter sign combination

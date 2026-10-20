@@ -223,6 +223,18 @@ struct DynamicState {
         }
     }
 
+    /// SHADPS4_DLSS_HALTON (vk_dlss.h): the sub-pixel shift of a pass drawn with the scene depth,
+    /// added to the viewports at commit (0 elsewhere). Set where the render scale is set.
+    float render_jitter_x{};
+    float render_jitter_y{};
+    void SetRenderJitter(float x, float y) {
+        if (render_jitter_x != x || render_jitter_y != y) {
+            render_jitter_x = x;
+            render_jitter_y = y;
+            dirty_state.viewports = true;
+        }
+    }
+
     /// Commits the dynamic state to the provided command buffer.
     void Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf);
 
