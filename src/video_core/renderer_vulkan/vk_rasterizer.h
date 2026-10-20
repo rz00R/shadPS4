@@ -325,6 +325,13 @@ public:
     void DeriveNeoIdBuffer(VideoCore::Image& id_image);
     /// SHADPS4_DLSS: the back-side action that replaces the T2x resolve draw.
     void DlssResolve();
+    /// SHADPS4_DLSS_LOD_BIAS (vk_dlss_upscale.h): back thread, at the resolve - takes the bias
+    /// the next frame's G-buffer draws get; a change bumps the sampler generation.
+    void UpdateSceneLodBias();
+    /// The bias for a pipeline's samplers (0 unless a graphics pipeline with >= 5 colour targets).
+    float SamplerLodBias(const Pipeline* pipeline) const;
+    float scene_lod_bias{};     ///< in effect (back thread)
+    float draw_lod_bias{};      ///< the draw BindResources is binding (BindTextures and memos)
     u64 dlss_calls{};
     u64 dlss_missing{};
     u8 dlss_phase_in{};                   ///< the phase of the action being executed

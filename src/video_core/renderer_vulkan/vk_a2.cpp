@@ -1076,6 +1076,12 @@ bool StretchTranslator::Impl::Take(const AmdGpu::Regs& regs, const DrawIn& draw)
             return refuse(RefuseOff);
         }
     }
+    if (Dlss::g_scene_lod_bias.load(std::memory_order_relaxed) != 0.0f && draw.pipeline &&
+        std::popcount(draw.pipeline->GetGraphicsKey().mrt_mask & 0xffu) >= 5) [[unlikely]] {
+        // SHADPS4_DLSS_LOD_BIAS (vk_dlss_upscale.h): G-buffer draws sample with the back's
+        // biased samplers, which the workers' sampler table does not hold: they stay on the back.
+        return refuse(RefuseOff);
+    }
     if (!draw.is_indexed) {
         return refuse(RefuseNotIndexed);
     }

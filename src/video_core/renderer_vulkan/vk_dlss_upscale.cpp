@@ -151,6 +151,7 @@ void Upscaler::SetOutputSize(u32 width, u32 height) {
                  output_size.width, output_size.height, force ? ", forced" : "");
         g_hud_layer.store(on, std::memory_order_relaxed);
     }
+    g_upscale_width.store(on ? output_size.width : 0u, std::memory_order_relaxed);
 }
 
 void Upscaler::Resize(vk::Extent2D size) {

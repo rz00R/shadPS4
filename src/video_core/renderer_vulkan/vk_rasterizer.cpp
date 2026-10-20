@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <tuple>
+#include <bit>
+#include <cmath>
 #include <array>
 #include <immintrin.h>
 #include <set>
@@ -1658,10 +1660,45 @@ void Rasterizer::ExecuteFilteredDraw(DrawClass draw_class) {
     }
 }
 
+// SHADPS4_DLSS_LOD_BIAS (vk_dlss_upscale.h): the S# LOD bias field is s5.8 in 14 bits. Depth
+// compare (shadow) samplers keep theirs.
+static void ApplySceneLodBias(AmdGpu::Sampler& ssharp, float bias) {
+    if (bias == 0.0f || ssharp.depth_compare_func != AmdGpu::DepthCompare::Never) {
+        return;
+    }
+    const s32 raw = static_cast<s16>((ssharp.lod_bias.Value() ^ 0x2000u) - 0x2000u);
+    const s32 biased = std::clamp(raw + static_cast<s32>(std::lround(bias * 256.0f)), -0x2000,
+                                  0x1fff);
+    ssharp.lod_bias.Assign(static_cast<u64>(static_cast<u32>(biased) & 0x3fffu));
+}
+
+float Rasterizer::SamplerLodBias(const Pipeline* pipeline) const {
+    if (scene_lod_bias == 0.0f || !pipeline || pipeline->IsCompute()) {
+        return 0.0f;
+    }
+    const auto* graphics = static_cast<const GraphicsPipeline*>(pipeline);
+    return std::popcount(graphics->GetGraphicsKey().mrt_mask & 0xffu) >= 5 ? scene_lod_bias
+                                                                            : 0.0f;
+}
+
+void Rasterizer::UpdateSceneLodBias() {
+    const float want = Dlss::SceneLodBiasWanted();
+    if (want == scene_lod_bias) [[likely]] {
+        return;
+    }
+    LOG_INFO(Render_Vulkan, "DLSS: scene texture LOD bias {:.3f} (was {:.3f})", want,
+             scene_lod_bias);
+    scene_lod_bias = want;
+    Dlss::g_scene_lod_bias.store(want, std::memory_order_relaxed);
+    // Prepared draws, draw repeat and the bind memos hold resolved samplers: re-resolve them.
+    texture_cache.BumpSamplerGeneration();
+}
+
 void Rasterizer::DlssResolve() {
     // SHADPS4_DLSS (vk_dlss.h): the game's T2x resolve replaced. =1: DLAA from the tonemap output
     // 0x2f9e10000 + motion vectors + depth into the resolve's target; =2 or any failure this frame:
     // a plain copy of the tonemap output (the game without its temporal AA for that frame).
+    UpdateSceneLodBias();
     ++dlss_calls;
     ++dlss_phases[dlss_phase_in & 3];
     Dlss5::g_resolves.fetch_add(1, std::memory_order_release); // a game-rendered frame
@@ -6118,6 +6155,7 @@ bool Rasterizer::BindlessResolve(const GraphicsPipeline* base, u32* slots, vk::I
         }
         st.c_bl_miss += __rdtsc() - tc0;
     }
+    const float smp_lod_bias = SamplerLodBias(base); // SHADPS4_DLSS_LOD_BIAS
     std::array<size_t, Shader::NativeBindlessSmpCap> lru{};
     u32 n_lru = 0;
     const u64 ts0 = __rdtsc();
@@ -6131,6 +6169,7 @@ bool Rasterizer::BindlessResolve(const GraphicsPipeline* base, u32* slots, vk::I
                 ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);
             }
         }
+        ApplySceneLodBias(ssharp, smp_lod_bias); // SHADPS4_DLSS_LOD_BIAS
         std::array<u32, 4> words;
         static_assert(sizeof(ssharp) == sizeof(words));
         std::memcpy(words.data(), &ssharp, sizeof(words));
@@ -10385,6 +10424,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     }
 
     // Bind resource buffers and textures.
+    draw_lod_bias = SamplerLodBias(pipeline); // SHADPS4_DLSS_LOD_BIAS: BindTextures and the memos
     Shader::Backend::Bindings binding{};
     push_data = MakeUserData(liverpool->BackRegs());
     u8 memo_draw_bits = 3;
@@ -10616,6 +10656,7 @@ u8 Rasterizer::BindStageMemoStats(const Pipeline* pipeline, const Shader::BoundS
                 ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);
             }
         }
+        ApplySceneLodBias(ssharp, draw_lod_bias); // SHADPS4_DLSS_LOD_BIAS
         st.ssharps.push_back(ssharp);
     }
     const u64 border = liverpool->BackRegs().ta_bc_base.base_addr;
@@ -11274,6 +11315,7 @@ void Rasterizer::BindTexturesMemo(const Pipeline* pipeline, const Shader::BoundS
                 ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);
             }
         }
+        ApplySceneLodBias(ssharp, draw_lod_bias); // SHADPS4_DLSS_LOD_BIAS
         st.ssharps.push_back(ssharp);
     }
     const u64 border = liverpool->BackRegs().ta_bc_base.base_addr;
@@ -13101,6 +13143,7 @@ void Rasterizer::BindTextures(const Shader::BoundStage& bound,
                 ssharp.max_aniso.Assign(AmdGpu::AnisoRatio::One);
             }
         }
+        ApplySceneLodBias(ssharp, draw_lod_bias); // SHADPS4_DLSS_LOD_BIAS
         u32 native_sampler_index{};
         const auto vk_sampler =
             texture_cache.GetSampler(ssharp, liverpool->BackRegs().ta_bc_base,

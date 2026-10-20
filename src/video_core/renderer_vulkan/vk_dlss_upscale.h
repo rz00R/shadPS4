@@ -3,7 +3,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <cstdlib>
 #include <deque>
 #include <memory>
 #include "common/types.h"
@@ -44,6 +47,31 @@ inline std::atomic<bool> g_hud_layer{false};
 inline bool HudLayerActive() {
     return g_hud_layer.load(std::memory_order_relaxed) &&
            g_user_on.load(std::memory_order_relaxed);
+}
+
+// ---- scene texture LOD bias (SHADPS4_DLSS_LOD_BIAS, 2026-10-20) ----
+// DLSS rebuilds an output-resolution picture, so the scene's textures must be sampled at the
+// output's mip level, not the render's (DLSS programming guide sec. 3.5; the iss_pc temporal
+// upscaler does the same: "scene texture LOD bias -1.00" at 1080p -> 2160p). Applied to the
+// samplers of G-buffer draws (graphics pipelines writing 5 or more colour targets) while the
+// upscale is on: log2(1920 / output width) = -1 at 2160p, -0.415 at 1440p, 0 for DLAA.
+//   SHADPS4_DLSS_LOD_BIAS=0: off; Shift+Delete: on / off live (A/B).
+inline std::atomic<u32> g_upscale_width{0}; ///< presenter: DLSS output width, 0 = upscale off
+inline std::atomic<bool> g_lod_bias_on{[] {
+    const char* v = std::getenv("SHADPS4_DLSS_LOD_BIAS");
+    return !(v && v[0] == '0');
+}()};
+/// The bias in effect for G-buffer draws (written by the back at the DLSS resolve; read by A2).
+inline std::atomic<float> g_scene_lod_bias{0.0f};
+
+/// The bias the next frame's G-buffer draws should get (multiple of 1/256, the S# precision).
+inline float SceneLodBiasWanted() {
+    const u32 w = g_upscale_width.load(std::memory_order_relaxed);
+    if (!g_lod_bias_on.load(std::memory_order_relaxed) || !HudLayerActive() || w <= 1920) {
+        return 0.0f;
+    }
+    const float b = std::max(std::log2(1920.0f / static_cast<float>(w)), -2.0f);
+    return std::round(b * 256.0f) / 256.0f;
 }
 
 /// Draw paths: a draw into the HUD layer that writes RGB writes RGBA (coverage in alpha).

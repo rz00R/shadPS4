@@ -331,33 +331,59 @@ bool Evaluate(vk::CommandBuffer cmdbuf, u64 frame, const EvalImage& color, const
         options.outputWidth = output.width;
         options.outputHeight = output.height;
         if (output.width != color.width || output.height != color.height) {
-            // SHADPS4_DLSS_UPSCALE: the game's 1920x1080 into the window size - the first mode
-            // whose render range holds it (1080p -> 1440p is 0.75: Quality, inferred).
-            constexpr std::array modes{sl::DLSSMode::eMaxQuality, sl::DLSSMode::eUltraQuality,
-                                       sl::DLSSMode::eBalanced, sl::DLSSMode::eMaxPerformance};
-            options.mode = sl::DLSSMode::eMaxQuality;
+            // SHADPS4_DLSS_UPSCALE: the game's 1920x1080 into the output size. The mode whose
+            // optimal render size is the closest to 1920 (2160p: Performance, exactly 1920x1080;
+            // 1440p: Quality), as the iss_pc upscaler picks it from the scale - it selects the
+            // DLSS 4.5 preset for that ratio (2026-10-20: the first mode whose range held 1080p
+            // was Quality at 2160p, a softer preset and range than the ratio calls for).
+            // SHADPS4_DLSS_MODE=1..5 (sl::DLSSMode) forces one.
+            constexpr std::array modes{sl::DLSSMode::eMaxPerformance, sl::DLSSMode::eBalanced,
+                                       sl::DLSSMode::eMaxQuality, sl::DLSSMode::eUltraQuality,
+                                       sl::DLSSMode::eUltraPerformance};
+            const char* forced = std::getenv("SHADPS4_DLSS_MODE");
+            const int forced_mode = forced ? std::atoi(forced) : 0;
+            sl::DLSSMode best = sl::DLSSMode::eMaxQuality;
+            u32 best_distance = ~0u;
             for (const sl::DLSSMode m : modes) {
                 options.mode = m;
                 sl::DLSSOptimalSettings opt{};
                 if (!g_api.dlss_get_optimal ||
                     g_api.dlss_get_optimal(options, opt) != sl::Result::eOk) {
-                    options.mode = sl::DLSSMode::eMaxQuality;
-                    break;
+                    continue;
                 }
                 LOG_INFO(Render_Vulkan,
                          "DLSS: mode {} for {}x{}: render {}x{} (min {}x{}, max {}x{})",
                          static_cast<u32>(m), output.width, output.height, opt.optimalRenderWidth,
                          opt.optimalRenderHeight, opt.renderWidthMin, opt.renderHeightMin,
                          opt.renderWidthMax, opt.renderHeightMax);
-                if (opt.renderWidthMin <= color.width && color.width <= opt.renderWidthMax &&
-                    opt.renderHeightMin <= color.height && color.height <= opt.renderHeightMax) {
+                if (forced_mode == static_cast<int>(m)) {
+                    best = m;
+                    best_distance = 0;
                     break;
                 }
+                if (opt.optimalRenderWidth == 0 || opt.renderWidthMin > color.width ||
+                    color.width > opt.renderWidthMax || opt.renderHeightMin > color.height ||
+                    color.height > opt.renderHeightMax) {
+                    continue;
+                }
+                const u32 distance = opt.optimalRenderWidth > color.width
+                                         ? opt.optimalRenderWidth - color.width
+                                         : color.width - opt.optimalRenderWidth;
+                if (distance < best_distance) {
+                    best = m;
+                    best_distance = distance;
+                }
             }
+            options.mode = best;
+            LOG_INFO(Render_Vulkan, "DLSS: picked mode {} for {}x{} -> {}x{}{}",
+                     static_cast<u32>(best), color.width, color.height, output.width,
+                     output.height, forced_mode != 0 ? " (SHADPS4_DLSS_MODE)" : "");
         }
         options.qualityPreset = static_cast<sl::DLSSPreset>(preset);
         options.ultraQualityPreset = static_cast<sl::DLSSPreset>(preset);
         options.balancedPreset = static_cast<sl::DLSSPreset>(preset);
+        options.performancePreset = static_cast<sl::DLSSPreset>(preset);
+        options.ultraPerformancePreset = static_cast<sl::DLSSPreset>(preset);
         options.colorBuffersHDR = sl::Boolean::eFalse; // the tonemapped LDR frame
         options.preExposure = 1.0f;
         options.exposureScale = 1.0f;

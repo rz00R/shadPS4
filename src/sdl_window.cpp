@@ -33,6 +33,7 @@
 #include "sdl_window.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "video_core/renderer_vulkan/vk_dlss_upscale.h"
 #include "video_core/renderer_vulkan/vk_dlss_fg.h"
 #include "video_core/renderer_vulkan/vk_dlss5.h"
 #include "video_core/texture_cache/tex_replace.h"
@@ -400,6 +401,16 @@ void WindowSDL::WaitEvent() {
                 Overlay::ShowNotice(on ? "DLSS Frame Generation: ON"
                                        : "DLSS Frame Generation: OFF");
             }
+        } else if (Vulkan::Dlss::Enabled() && event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+                   event.key.key == SDLK_DELETE && (event.key.mod & SDL_KMOD_SHIFT)) {
+            // SHADPS4_DLSS_LOD_BIAS (vk_dlss_upscale.h): Shift+Delete = scene texture LOD bias on /
+            // off (A/B; applied at the next DLSS resolve).
+            const bool on = !Vulkan::Dlss::g_lod_bias_on.load(std::memory_order_relaxed);
+            Vulkan::Dlss::g_lod_bias_on.store(on, std::memory_order_relaxed);
+            LOG_INFO(Render_Vulkan, "DLSS: scene texture LOD bias {} (Shift+Delete)",
+                     on ? "on" : "off");
+            Overlay::ShowNotice(on ? "DLSS texture LOD bias: ON (output-resolution mips)"
+                                   : "DLSS texture LOD bias: OFF (1080p mips)");
         } else if (Vulkan::Dlss::Enabled() && event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
                    (event.key.key == SDLK_PAGEDOWN || event.key.key == SDLK_INSERT) &&
                    (event.key.mod & SDL_KMOD_SHIFT)) {

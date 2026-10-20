@@ -262,6 +262,13 @@ public:
         return sampler_generation.load(std::memory_order_acquire);
     }
 
+    /// SHADPS4_DLSS_LOD_BIAS: the scene samplers changed; every cache keyed on the generation
+    /// (prepared draws, draw repeat, bind memo) re-resolves its samplers.
+    void BumpSamplerGeneration() {
+        std::scoped_lock lock{samplers_mutex};
+        sampler_generation.fetch_add(1, std::memory_order_release);
+    }
+
     /// SHADPS4_TEX_BIND_MEMO: protects a binding-memo hit's validation and LRU touches the way
     /// the FindImage/UpdateImage fast paths are protected: the lock-free handshake when
     /// SHADPS4_TEX_LOCKFREE_HIT is on (Refused while a foreign CacheLock holder is active; the
